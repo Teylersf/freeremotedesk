@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FreeRemoteDesk",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "identifier": "com.freeremotedesk.agent",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "FreeRemoteDesk",
         "width": 480,
         "height": 640,
@@ -27,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["msi", "nsis", "app", "dmg", "deb", "rpm", "appimage"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,6 +39,21 @@
     "copyright": "Copyright © 2026 FreeRemoteDesk contributors",
     "category": "Utility",
     "shortDescription": "Reach your home dev machine from any device",
-    "longDescription": "FreeRemoteDesk is a browser-first, passkey-secured remote desktop. Install this agent on the machine you want to reach, then visit freeremotedesk.com from any device to connect."
+    "longDescription": "FreeRemoteDesk is a browser-first, self-hosted remote desktop. Install this agent on the machine you want to reach; deploy the PWA + signaling to your own free-tier Cloudflare and Vercel accounts; connect from any browser at zero monthly cost.",
+    "publisher": "FreeRemoteDesk contributors",
+    "homepage": "https://github.com/Teylersf/freeremotedesk",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "wix": {
+        "language": ["en-US"]
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    }
   }
 }

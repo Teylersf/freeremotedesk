@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { disable as autostartDisable, enable as autostartEnable, isEnabled as autostartIsEnabled } from "@tauri-apps/plugin-autostart";
 import type { AgentConfig } from "./types";
 
 type Props = { current: AgentConfig; onSaved: (cfg: AgentConfig) => void };
@@ -14,8 +15,13 @@ type Props = { current: AgentConfig; onSaved: (cfg: AgentConfig) => void };
 export function SetupWizard({ current, onSaved }: Props) {
   const [signalingUrl, setSignalingUrl] = useState(current.signaling_url ?? "");
   const [pwaUrl, setPwaUrl] = useState(current.pwa_url ?? "");
+  const [startOnBoot, setStartOnBoot] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    void autostartIsEnabled().then(setStartOnBoot).catch(() => setStartOnBoot(false));
+  }, []);
 
   const canSave = signalingUrl.trim().length > 0 && !busy;
 
@@ -26,7 +32,6 @@ export function SetupWizard({ current, onSaved }: Props) {
     setStatus("Testing signaling URL…");
 
     const cleaned = normalizeUrl(signalingUrl);
-    // Sanity check: hit the /health endpoint before saving.
     try {
       const httpUrl = cleaned.replace(/^ws(s?):/, "http$1:");
       const r = await fetch(`${httpUrl}/health`, { method: "GET" });
@@ -49,6 +54,16 @@ export function SetupWizard({ current, onSaved }: Props) {
           pwa_url: pwaUrl.trim() ? pwaUrl.trim() : null,
         },
       });
+
+      // Best-effort — don't fail setup if autostart toggling misbehaves.
+      try {
+        const currentlyEnabled = await autostartIsEnabled();
+        if (startOnBoot && !currentlyEnabled) await autostartEnable();
+        if (!startOnBoot && currentlyEnabled) await autostartDisable();
+      } catch (e) {
+        console.warn("autostart toggle failed", e);
+      }
+
       onSaved(next);
     } catch (err) {
       setStatus(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -99,6 +114,15 @@ export function SetupWizard({ current, onSaved }: Props) {
         </span>
       </label>
 
+      <label style={styles.check}>
+        <input
+          type="checkbox"
+          checked={startOnBoot}
+          onChange={(e) => setStartOnBoot(e.target.checked)}
+        />
+        <span>Start FreeRemoteDesk when I sign in</span>
+      </label>
+
       <button type="submit" disabled={!canSave} style={styles.primary}>
         {busy ? "Saving…" : "Save and continue"}
       </button>
@@ -106,8 +130,8 @@ export function SetupWizard({ current, onSaved }: Props) {
       {status && <div style={styles.error}>{status}</div>}
 
       <div style={styles.footer}>
-        Config is stored locally at <code style={styles.code}>%APPDATA%\FreeRemoteDesk\config.json</code>.
-        You can change these anytime from the agent settings.
+        Config is stored locally in your OS app-data directory. You can change
+        these anytime from the agent's Settings menu.
       </div>
     </form>
   );
@@ -133,6 +157,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   help: { opacity: 0.7, fontSize: "0.9rem", lineHeight: 1.5 },
   label: { display: "flex", flexDirection: "column", gap: "0.4rem", fontSize: "0.9rem" },
+  check: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    fontSize: "0.9rem",
+    cursor: "pointer",
+  },
   input: {
     background: "#0a0a0a",
     color: "#f5f5f5",
@@ -158,5 +189,4 @@ const styles: Record<string, React.CSSProperties> = {
   },
   error: { color: "#ef4444", fontSize: "0.85rem" },
   footer: { opacity: 0.4, fontSize: "0.75rem", marginTop: "0.5rem" },
-  code: { fontFamily: "ui-monospace, monospace", fontSize: "0.75rem" },
 };

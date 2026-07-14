@@ -1,23 +1,40 @@
 //! FreeRemoteDesk host agent — library crate.
-//!
-//! Splits into a `lib` so both the desktop binary (`main.rs`) and future
-//! mobile targets (Android via `tauri-android`) can share the runtime.
 
 mod config;
 mod input;
 mod pairing;
+mod tray;
+
+use tauri::Manager;
+use tauri_plugin_autostart::MacosLauncher;
 
 /// Entry point wired up by both `main.rs` and mobile shims.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .setup(|_app| {
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
+        .setup(|app| {
             #[cfg(desktop)]
             {
-                // System-tray setup will go here in Phase 4.
+                tray::install(&app.handle())?;
+
+                // If launched with --minimized (autostart), hide the window
+                // immediately instead of flashing it on the user's screen.
+                let args: Vec<String> = std::env::args().collect();
+                if args.iter().any(|a| a == "--minimized") {
+                    if let Some(win) = app.get_webview_window("main") {
+                        let _ = win.hide();
+                    }
+                }
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            tray::intercept_close(&window.app_handle(), event);
         })
         .invoke_handler(tauri::generate_handler![
             pairing::request_pairing_code,
