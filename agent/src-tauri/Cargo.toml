@@ -1,6 +1,6 @@
 [package]
 name = "freeremotedesk-agent"
-version = "0.1.1"
+version = "0.2.0"
 description = "FreeRemoteDesk host agent"
 authors = ["FreeRemoteDesk contributors"]
 edition = "2021"
@@ -24,6 +24,7 @@ anyhow = "1"
 rand = "0.8"
 thiserror = "1"
 getrandom = "0.2"
+sha2 = "0.10"
 
 # Input injection: mouse + keyboard synthesis at OS level.
 # Cross-platform: Windows (SendInput), macOS (CGEvent), Linux (evdev/uinput/xdo).

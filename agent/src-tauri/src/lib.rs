@@ -22,8 +22,6 @@ pub fn run() {
             {
                 tray::install(&app.handle())?;
 
-                // If launched with --minimized (autostart), hide the window
-                // immediately instead of flashing it on the user's screen.
                 let args: Vec<String> = std::env::args().collect();
                 if args.iter().any(|a| a == "--minimized") {
                     if let Some(win) = app.get_webview_window("main") {
@@ -41,6 +39,10 @@ pub fn run() {
             input::inject_input,
             config::get_config,
             config::set_config,
+            config::list_trusted_clients,
+            config::store_trusted_client,
+            config::verify_trusted_client,
+            config::revoke_trusted_client,
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch FreeRemoteDesk agent");

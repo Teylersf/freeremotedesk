@@ -1,19 +1,28 @@
 /**
  * PeerClient — the PWA-side WebRTC peer (the "viewer").
  *
- * Flow:
- *   1. Open WebSocket to signaling: /ws/{code}
- *   2. Receive `welcome` — we're the "client" (second joiner).
- *   3. Receive `ready` — the host peer is present.
- *   4. Receive host's SDP offer via signaling.
- *   5. Set remote description, create + send answer.
- *   6. Trickle ICE both directions.
- *   7. Host's `track` event fires → we expose MediaStream to the UI.
- *   8. Host's data channels arrive → we expose them for input, control, etc.
+ * Two flows:
+ *
+ *   1. Pairing (code URL): user types a 6-char code, PWA opens /ws/{code}.
+ *      Host is on the other end, no auth required, WebRTC starts immediately
+ *      on "ready". After it connects, PWA can offer "save this host?" and
+ *      exchange trusted-device credentials on the "control" DataChannel.
+ *
+ *   2. Reconnect (host URL): PWA opens /ws/host-{hostId} using saved
+ *      credentials. Before WebRTC starts, PWA sends `auth` on the signaling
+ *      WebSocket. Host verifies, replies auth.ok / auth.fail. On ok, WebRTC
+ *      negotiation proceeds normally.
  */
 
 import { toWsUrl } from "../config";
-import { decode, encode, type SignalMessage } from "./protocol";
+import {
+  decode,
+  decodeControl,
+  encode,
+  encodeControl,
+  type ControlMessage,
+  type SignalMessage,
+} from "./protocol";
 
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -24,23 +33,32 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
 export type PeerClientEvents = {
   onTrack: (stream: MediaStream) => void;
   onDataChannel: (label: string, channel: RTCDataChannel) => void;
+  onControlMessage: (msg: ControlMessage) => void;
   onStateChange: (state: RTCIceConnectionState) => void;
   onClose: (reason?: string) => void;
   onError: (err: Error) => void;
+  onAuthResult: (ok: boolean, reason?: string) => void;
+};
+
+export type PeerClientOptions = {
+  /** URL param — pairing code, or `host-{agent_id}` for reconnect. */
+  code: string;
+  signalingUrl: string;
+  /** If provided, PWA will send this as `auth` before starting WebRTC. */
+  auth?: { clientId: string; secret: string };
 };
 
 export class PeerClient {
-  readonly code: string;
-  readonly signalingWsUrl: string;
+  readonly opts: PeerClientOptions;
   private pc: RTCPeerConnection;
   private ws: WebSocket | null = null;
+  private controlChannel: RTCDataChannel | null = null;
   private handlers: Partial<PeerClientEvents> = {};
   private remoteStream: MediaStream | null = null;
   private closed = false;
 
-  constructor(code: string, signalingUrl: string) {
-    this.code = code;
-    this.signalingWsUrl = toWsUrl(signalingUrl);
+  constructor(opts: PeerClientOptions) {
+    this.opts = opts;
     this.pc = new RTCPeerConnection({
       iceServers: DEFAULT_ICE_SERVERS,
       bundlePolicy: "max-bundle",
@@ -55,11 +73,19 @@ export class PeerClient {
     });
 
     this.pc.addEventListener("datachannel", (evt) => {
-      this.handlers.onDataChannel?.(evt.channel.label, evt.channel);
+      const ch = evt.channel;
+      if (ch.label === "control") {
+        this.controlChannel = ch;
+        ch.addEventListener("message", (mEvt) => {
+          const msg = decodeControl(typeof mEvt.data === "string" ? mEvt.data : "");
+          if (msg) this.handlers.onControlMessage?.(msg);
+        });
+      }
+      this.handlers.onDataChannel?.(ch.label, ch);
     });
 
     this.pc.addEventListener("icecandidate", (evt) => {
-      this.send({ t: "ice", candidate: evt.candidate ? evt.candidate.toJSON() : null });
+      this.sendSignal({ t: "ice", candidate: evt.candidate ? evt.candidate.toJSON() : null });
     });
 
     this.pc.addEventListener("iceconnectionstatechange", () => {
@@ -76,7 +102,7 @@ export class PeerClient {
 
   async connect(): Promise<void> {
     if (this.closed) throw new Error("client closed");
-    const url = `${this.signalingWsUrl}/ws/${encodeURIComponent(this.code)}`;
+    const url = `${toWsUrl(this.opts.signalingUrl)}/ws/${encodeURIComponent(this.opts.code)}`;
     const ws = new WebSocket(url);
     this.ws = ws;
 
@@ -103,23 +129,52 @@ export class PeerClient {
     });
   }
 
+  /** Send a control-channel message (e.g., pair.save). Requires control channel to be open. */
+  sendControl(msg: ControlMessage): boolean {
+    const ch = this.controlChannel;
+    if (!ch || ch.readyState !== "open") return false;
+    ch.send(encodeControl(msg));
+    return true;
+  }
+
   private async onSignal(msg: SignalMessage): Promise<void> {
     try {
       switch (msg.t) {
         case "welcome":
-          if (msg.peerId !== "client") {
-            throw new Error(`unexpected peer role: ${msg.peerId}`);
+          if (msg.peerId !== "client") throw new Error(`unexpected role: ${msg.peerId}`);
+          break;
+
+        case "ready":
+          // Host is present. If we have credentials (reconnect flow), send auth now.
+          // Otherwise (pair flow), the host will start negotiation and we just wait
+          // for the offer.
+          if (this.opts.auth) {
+            this.sendSignal({
+              t: "auth",
+              clientId: this.opts.auth.clientId,
+              secret: this.opts.auth.secret,
+            });
           }
           break;
-        case "ready":
+
+        case "auth.ok":
+          this.handlers.onAuthResult?.(true);
           break;
+
+        case "auth.fail":
+          this.handlers.onAuthResult?.(false, msg.reason);
+          this.handlers.onError?.(new Error(msg.reason ?? "authentication failed"));
+          this.close();
+          break;
+
         case "sdp":
           if (msg.kind !== "offer") return;
           await this.pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
           const answer = await this.pc.createAnswer();
           await this.pc.setLocalDescription(answer);
-          if (answer.sdp) this.send({ t: "sdp", kind: "answer", sdp: answer.sdp });
+          if (answer.sdp) this.sendSignal({ t: "sdp", kind: "answer", sdp: answer.sdp });
           break;
+
         case "ice":
           if (msg.candidate) {
             try {
@@ -129,6 +184,7 @@ export class PeerClient {
             }
           }
           break;
+
         case "peer-gone":
           this.handlers.onClose?.("host left");
           this.close();
@@ -139,7 +195,7 @@ export class PeerClient {
     }
   }
 
-  private send(msg: SignalMessage) {
+  private sendSignal(msg: SignalMessage) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(encode(msg));
   }
@@ -147,15 +203,7 @@ export class PeerClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    try {
-      this.ws?.close();
-    } catch {
-      /* ignore */
-    }
-    try {
-      this.pc.close();
-    } catch {
-      /* ignore */
-    }
+    try { this.ws?.close(); } catch { /* ignore */ }
+    try { this.pc.close(); } catch { /* ignore */ }
   }
 }
