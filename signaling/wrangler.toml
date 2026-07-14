@@ -20,9 +20,12 @@ compatibility_date = "2025-01-01"
 name = "SESSION"
 class_name = "SessionRoom"
 
+# Cloudflare's free plan requires Durable Objects to be backed by SQLite,
+# which means the migration must be `new_sqlite_classes`, not the older
+# `new_classes`. Paid Workers plans accept either.
 [[migrations]]
 tag = "v1"
-new_classes = ["SessionRoom"]
+new_sqlite_classes = ["SessionRoom"]
 
 # Uncomment when you get to Phase 3 (WebAuthn) — needs a D1 database:
 #   wrangler d1 create freeremotedesk-auth

@@ -141,6 +141,12 @@ Example message to user:
 **`wrangler deploy` says "You need to specify an account"**
 The user has multiple Cloudflare accounts. Run `npx wrangler whoami` to list them, then `wrangler deploy --account-id <id>`.
 
+**`wrangler deploy` fails with `code 10097` "In order to use Durable Objects with a free plan, you must create a namespace using a `new_sqlite_classes` migration"**
+Older `new_classes` migrations aren't allowed on free-plan accounts. Fix by editing `signaling/wrangler.toml`: change `new_classes = ["SessionRoom"]` to `new_sqlite_classes = ["SessionRoom"]`, then re-run `wrangler deploy`. The main-branch config already uses `new_sqlite_classes`, but keep this recovery in mind if you're deploying an older tag.
+
+**Cloudflare social login (Google sign-in) fails with "Social login did not work"**
+Known intermittent bug on Cloudflare's side. Tell the user to click "Sign up for Cloudflare using another method" and use email + password instead — takes 30 seconds. Once signed in, retry the Deploy Button flow.
+
 **`vercel deploy` errors "Project not found"**
 The user has never used Vercel. `vercel deploy --prod --yes` should trigger the project-creation flow. If it doesn't, run `vercel link` interactively first.
 
