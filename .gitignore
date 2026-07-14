@@ -1,0 +1,56 @@
+# Node
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# Build output
+dist/
+build/
+out/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# Rust / Tauri
+target/
+Cargo.lock
+!agent/src-tauri/Cargo.lock
+
+# Tauri build artifacts
+agent/src-tauri/gen/
+agent/src-tauri/WixTools/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+.dev.vars
+
+# Cloudflare Workers
+.wrangler/
+wrangler.toml.bak
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Local sandbox stuff
+/scratch/
+/tmp/

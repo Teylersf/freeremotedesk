@@ -1,0 +1,33 @@
+name = "freeremotedesk-signaling"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Object for stateful pairing/session channels between two peers.
+[[durable_objects.bindings]]
+name = "SESSION"
+class_name = "SessionRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SessionRoom"]
+
+# D1 for auth records (registered WebAuthn credentials per host).
+# Create with: wrangler d1 create freeremotedesk-auth
+# Then paste the returned database_id here.
+[[d1_databases]]
+binding = "AUTH_DB"
+database_name = "freeremotedesk-auth"
+database_id = "PLACEHOLDER-run-wrangler-d1-create-then-paste-here"
+
+# Rate limiting binding.
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
+[vars]
+RP_ID = "freeremotedesk.com"
+RP_NAME = "FreeRemoteDesk"
+RP_ORIGIN = "https://freeremotedesk.com"

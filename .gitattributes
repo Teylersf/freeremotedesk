@@ -1,0 +1,16 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Windows-native scripts stay CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binaries — no diff, no eol conversion
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.wasm binary

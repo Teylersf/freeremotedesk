@@ -1,0 +1,19 @@
+{
+  "name": "freeremotedesk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser-first, passkey-secured remote desktop with zero server cost",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:pwa": "pnpm --filter @freeremotedesk/pwa dev",
+    "dev:signaling": "pnpm --filter @freeremotedesk/signaling dev",
+    "dev:agent": "pnpm --filter @freeremotedesk/agent tauri:dev",
+    "build:pwa": "pnpm --filter @freeremotedesk/pwa build",
+    "build:signaling": "pnpm --filter @freeremotedesk/signaling build",
+    "build:agent": "pnpm --filter @freeremotedesk/agent tauri:build",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

@@ -1,0 +1,39 @@
+[package]
+name = "freeremotedesk-agent"
+version = "0.0.0"
+description = "FreeRemoteDesk host agent"
+authors = ["FreeRemoteDesk contributors"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "freeremotedesk_agent_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+rand = "0.8"
+thiserror = "1"
+
+# Input injection: mouse + keyboard synthesis at OS level.
+# Cross-platform: Windows (SendInput), macOS (CGEvent), Linux (evdev/uinput/xdo).
+enigo = { version = "0.5", features = ["serde"] }
+
+# WebRTC + screen capture are done in the WebView (see agent/src/webrtc/host.ts).
+# Native paths (webrtc-rs + scap) can replace the webview approach in Phase 4
+# if performance becomes an issue.
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = "z"
