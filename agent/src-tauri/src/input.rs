@@ -3,17 +3,11 @@
 //! Receives normalized input events from the WebView (which received them
 //! from the remote PWA client over the WebRTC DataChannel) and dispatches
 //! them via `enigo` on Windows / macOS / Linux.
-//!
-//! Coordinates arriving from the client are normalized to [0, 1] over the
-//! shared video area. We map to absolute screen pixels using the primary
-//! monitor's resolution.
 
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
-// Kept alive across commands so injections stay in the same session; some
-// platforms are cheaper if we don't re-init per event.
 static ENIGO: Mutex<Option<Enigo>> = Mutex::new(None);
 
 fn with_enigo<F, R>(f: F) -> Result<R, String>
@@ -29,11 +23,9 @@ where
 }
 
 fn screen_size() -> Result<(i32, i32), String> {
-    // Fresh Enigo per query — cheap; also handles multi-monitor changes.
     let enigo = Enigo::new(&Settings::default()).map_err(|e| format!("enigo init: {e}"))?;
     enigo
         .main_display()
-        .map(|(w, h)| (w, h))
         .map_err(|e| format!("main_display: {e}"))
 }
 
@@ -42,19 +34,23 @@ fn screen_size() -> Result<(i32, i32), String> {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "t")]
 pub enum InputPayload {
-    /// Mouse move — normalized coordinates in [0, 1].
+    /// Absolute mouse move (normalized [0, 1]).
     #[serde(rename = "m")]
     Move { x: f64, y: f64 },
+    /// Relative mouse move (raw pixels — mobile trackpad).
+    #[serde(rename = "mr")]
+    MoveRel { dx: f64, dy: f64 },
     /// Mouse button. `b`: 0=left, 1=middle, 2=right. `d`: true=down, false=up.
     #[serde(rename = "mb")]
     Button { b: u8, d: bool },
-    /// Scroll wheel.
+    /// Scroll wheel (raw pixel deltas from browser wheel event).
     #[serde(rename = "w")]
     Wheel { dx: f64, dy: f64 },
-    /// Keyboard event. `code` is a `KeyboardEvent.code` string.
+    /// Keyboard event. `code` is a `KeyboardEvent.code` string, or
+    /// `Char:<c>` for an arbitrary character from mobile text input.
     #[serde(rename = "k")]
     Key { code: String, d: bool, mods: u8 },
-    /// Touch tap.
+    /// Touch tap (legacy — kept for older client versions).
     #[serde(rename = "tap")]
     Tap { x: f64, y: f64 },
 }
@@ -67,6 +63,9 @@ pub fn inject_input(event: InputPayload) -> Result<(), String> {
             let px = (x.clamp(0.0, 1.0) * w as f64) as i32;
             let py = (y.clamp(0.0, 1.0) * h as f64) as i32;
             with_enigo(|e| e.move_mouse(px, py, Coordinate::Abs))?;
+        }
+        InputPayload::MoveRel { dx, dy } => {
+            with_enigo(|e| e.move_mouse(dx.round() as i32, dy.round() as i32, Coordinate::Rel))?;
         }
         InputPayload::Button { b, d } => {
             let button = match b {
@@ -82,12 +81,19 @@ pub fn inject_input(event: InputPayload) -> Result<(), String> {
                 let ticks = (dy / 120.0).round() as i32;
                 if ticks != 0 {
                     with_enigo(|e| e.scroll(-ticks, Axis::Vertical))?;
+                } else if dy.abs() >= 1.0 {
+                    // Small deltas (touch trackpad two-finger drag) still need to scroll.
+                    let sign = if dy > 0.0 { -1 } else { 1 };
+                    with_enigo(|e| e.scroll(sign, Axis::Vertical))?;
                 }
             }
             if dx != 0.0 {
                 let ticks = (dx / 120.0).round() as i32;
                 if ticks != 0 {
                     with_enigo(|e| e.scroll(ticks, Axis::Horizontal))?;
+                } else if dx.abs() >= 1.0 {
+                    let sign = if dx > 0.0 { 1 } else { -1 };
+                    with_enigo(|e| e.scroll(sign, Axis::Horizontal))?;
                 }
             }
         }
@@ -109,10 +115,18 @@ pub fn inject_input(event: InputPayload) -> Result<(), String> {
 
 /// Map a subset of `KeyboardEvent.code` strings to enigo `Key`s.
 ///
-/// Not exhaustive for MVP — covers control keys + falls through to `Unicode`
-/// for printable characters (which handles letter/digit rows correctly on
-/// most layouts).
+/// Also handles `Char:<c>` codes emitted by the mobile hidden-keyboard flow,
+/// where we can't rely on `code` (mobile IMEs don't fire real key events for
+/// composed characters) — we send raw character values instead.
 fn map_code(code: &str) -> Key {
+    // Mobile IME character stream.
+    if let Some(rest) = code.strip_prefix("Char:") {
+        if let Some(ch) = rest.chars().next() {
+            return Key::Unicode(ch);
+        }
+        return Key::Unicode(' ');
+    }
+
     match code {
         "Enter" | "NumpadEnter" => Key::Return,
         "Backspace" => Key::Backspace,
@@ -135,18 +149,9 @@ fn map_code(code: &str) -> Key {
         "CapsLock" => Key::CapsLock,
         c if c.starts_with("F") && c[1..].parse::<u8>().is_ok() => {
             match c[1..].parse::<u8>().unwrap_or(1) {
-                1 => Key::F1,
-                2 => Key::F2,
-                3 => Key::F3,
-                4 => Key::F4,
-                5 => Key::F5,
-                6 => Key::F6,
-                7 => Key::F7,
-                8 => Key::F8,
-                9 => Key::F9,
-                10 => Key::F10,
-                11 => Key::F11,
-                12 => Key::F12,
+                1 => Key::F1, 2 => Key::F2, 3 => Key::F3, 4 => Key::F4,
+                5 => Key::F5, 6 => Key::F6, 7 => Key::F7, 8 => Key::F8,
+                9 => Key::F9, 10 => Key::F10, 11 => Key::F11, 12 => Key::F12,
                 _ => Key::F1,
             }
         }
