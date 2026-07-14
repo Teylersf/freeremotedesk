@@ -1,9 +1,21 @@
 name = "freeremotedesk-signaling"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
-compatibility_flags = ["nodejs_compat"]
 
-# Durable Object for stateful pairing/session channels between two peers.
+# --------------------------------------------------------------------
+# FreeRemoteDesk is BYO-infra: this Worker is deployed by each end user
+# to their own Cloudflare account. Free tier easily covers signaling
+# for a personal instance (100k requests/day).
+#
+# Deploy:
+#     wrangler login
+#     wrangler deploy
+#
+# That's it. No secrets, no D1, no rate limit binding required for MVP.
+# --------------------------------------------------------------------
+
+# Durable Object: one instance per pairing code / active session, relays
+# messages between two WebSocket peers. Auto-evicted when both peers leave.
 [[durable_objects.bindings]]
 name = "SESSION"
 class_name = "SessionRoom"
@@ -12,22 +24,16 @@ class_name = "SessionRoom"
 tag = "v1"
 new_classes = ["SessionRoom"]
 
-# D1 for auth records (registered WebAuthn credentials per host).
-# Create with: wrangler d1 create freeremotedesk-auth
-# Then paste the returned database_id here.
-[[d1_databases]]
-binding = "AUTH_DB"
-database_name = "freeremotedesk-auth"
-database_id = "PLACEHOLDER-run-wrangler-d1-create-then-paste-here"
+# Uncomment when you get to Phase 3 (WebAuthn) — needs a D1 database:
+#   wrangler d1 create freeremotedesk-auth
+# then paste the returned database_id below.
+#
+# [[d1_databases]]
+# binding = "AUTH_DB"
+# database_name = "freeremotedesk-auth"
+# database_id = "PASTE_ID_HERE"
 
-# Rate limiting binding.
-[[unsafe.bindings]]
-name = "RATE_LIMITER"
-type = "ratelimit"
-namespace_id = "1001"
-simple = { limit = 60, period = 60 }
-
+# Optional: allow only your own PWA origin(s) to talk to signaling.
+# Comma-separated. Leave unset to allow any origin (fine for personal use).
 [vars]
-RP_ID = "freeremotedesk.com"
-RP_NAME = "FreeRemoteDesk"
-RP_ORIGIN = "https://freeremotedesk.com"
+ALLOWED_ORIGINS = ""

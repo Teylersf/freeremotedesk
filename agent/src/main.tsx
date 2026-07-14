@@ -2,66 +2,166 @@ import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { HostPeer } from "./webrtc/host";
+import { SetupWizard } from "./SetupWizard";
 import type { InputEvent } from "./protocol";
+import type { AgentConfig } from "./types";
 
 type UiState =
-  | { kind: "idle" }
-  | { kind: "code"; code: string }
-  | { kind: "connecting"; code: string }
-  | { kind: "connected"; code: string; peerState: string }
-  | { kind: "error"; message: string };
+  | { kind: "loading" }
+  | { kind: "setup"; current: AgentConfig }
+  | { kind: "idle"; config: AgentConfig }
+  | { kind: "code"; config: AgentConfig; code: string }
+  | { kind: "connecting"; config: AgentConfig; code: string }
+  | { kind: "connected"; config: AgentConfig; code: string; peerState: string }
+  | { kind: "error"; config: AgentConfig; message: string };
 
 function App() {
-  const [state, setState] = useState<UiState>({ kind: "idle" });
+  const [state, setState] = useState<UiState>({ kind: "loading" });
   const peerRef = useRef<HostPeer | null>(null);
 
   useEffect(() => {
     document.title = "FreeRemoteDesk Agent";
+    void bootstrap();
     return () => {
       peerRef.current?.close();
     };
   }, []);
 
-  async function startSession() {
+  async function bootstrap() {
     try {
-      const code = await invoke<string>("request_pairing_code");
-      setState({ kind: "code", code });
-
-      const peer = new HostPeer(code);
-      peerRef.current = peer;
-
-      peer.on("onStateChange", (s) =>
-        setState((prev) =>
-          prev.kind === "connecting" || prev.kind === "connected"
-            ? { kind: "connected", code, peerState: s }
-            : prev,
-        ),
-      );
-      peer.on("onInput", (evt) => onRemoteInput(evt));
-      peer.on("onError", (err) => setState({ kind: "error", message: err.message }));
-      peer.on("onClose", (reason) => {
-        peerRef.current = null;
-        setState({ kind: "error", message: reason ?? "session ended" });
-      });
-
-      // Ask the user to pick a screen. WebView2 will surface the OS picker.
-      await peer.captureScreen();
-      await peer.connect();
-      setState({ kind: "connecting", code });
+      const config = await invoke<AgentConfig>("get_config");
+      if (!config.signaling_url) {
+        setState({ kind: "setup", current: config });
+      } else {
+        setState({ kind: "idle", config });
+      }
     } catch (err) {
       setState({
         kind: "error",
+        config: { signaling_url: null, pwa_url: null, agent_id: "" },
         message: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
-  function reset() {
-    peerRef.current?.close();
-    peerRef.current = null;
-    setState({ kind: "idle" });
+  async function startSession(config: AgentConfig) {
+    if (!config.signaling_url) {
+      setState({ kind: "setup", current: config });
+      return;
+    }
+    try {
+      const code = await invoke<string>("request_pairing_code");
+      setState({ kind: "code", config, code });
+
+      const peer = new HostPeer(code, config.signaling_url);
+      peerRef.current = peer;
+
+      peer.on("onStateChange", (s) =>
+        setState((prev) =>
+          prev.kind === "connecting" || prev.kind === "connected"
+            ? { kind: "connected", config, code, peerState: s }
+            : prev,
+        ),
+      );
+      peer.on("onInput", (evt) => onRemoteInput(evt));
+      peer.on("onError", (err) =>
+        setState({ kind: "error", config, message: err.message }),
+      );
+      peer.on("onClose", (reason) => {
+        peerRef.current = null;
+        setState({ kind: "error", config, message: reason ?? "session ended" });
+      });
+
+      await peer.captureScreen();
+      await peer.connect();
+      setState({ kind: "connecting", config, code });
+    } catch (err) {
+      setState({
+        kind: "error",
+        config,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
+  function endSession(config: AgentConfig) {
+    peerRef.current?.close();
+    peerRef.current = null;
+    setState({ kind: "idle", config });
+  }
+
+  function openSettings() {
+    const currentConfig =
+      "config" in state ? state.config : { signaling_url: null, pwa_url: null, agent_id: "" };
+    setState({ kind: "setup", current: currentConfig });
+  }
+
+  if (state.kind === "loading") {
+    return <Layout><div style={{ opacity: 0.5 }}>Loading…</div></Layout>;
+  }
+
+  if (state.kind === "setup") {
+    return (
+      <Layout>
+        <SetupWizard current={state.current} onSaved={(cfg) => setState({ kind: "idle", config: cfg })} />
+      </Layout>
+    );
+  }
+
+  return (
+    <Layout>
+      <h1 style={{ margin: 0 }}>FreeRemoteDesk</h1>
+
+      {state.kind === "idle" && (
+        <>
+          <button onClick={() => startSession(state.config)} style={styles.primary}>
+            Start session
+          </button>
+          <div style={styles.hint}>
+            {state.config.pwa_url ? (
+              <>Enter the code at <b>{state.config.pwa_url}</b></>
+            ) : (
+              <>Enter the code on your PWA client</>
+            )}
+          </div>
+        </>
+      )}
+
+      {(state.kind === "code" || state.kind === "connecting" || state.kind === "connected") && (
+        <>
+          <CodeDisplay code={state.code} />
+          <div style={styles.hint}>
+            {state.kind === "code" && "Waiting for client…"}
+            {state.kind === "connecting" && "Client joined — establishing WebRTC…"}
+            {state.kind === "connected" && `Connected · ${state.peerState}`}
+          </div>
+          {state.config.pwa_url && (
+            <div style={{ ...styles.hint, opacity: 0.4 }}>
+              PWA: {state.config.pwa_url}
+            </div>
+          )}
+          <button onClick={() => endSession(state.config)}>End session</button>
+        </>
+      )}
+
+      {state.kind === "error" && (
+        <>
+          <div style={styles.error}>Error: {state.message}</div>
+          <button onClick={() => endSession(state.config)}>Back</button>
+        </>
+      )}
+
+      <button
+        onClick={openSettings}
+        style={{ ...styles.link, marginTop: "1rem" }}
+      >
+        Settings
+      </button>
+    </Layout>
+  );
+}
+
+function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
@@ -77,49 +177,7 @@ function App() {
         justifyContent: "center",
       }}
     >
-      <h1 style={{ margin: 0 }}>FreeRemoteDesk</h1>
-
-      {state.kind === "idle" && (
-        <>
-          <button
-            onClick={startSession}
-            style={{
-              background: "#4ade80",
-              color: "#000",
-              border: 0,
-              padding: "0.9rem 1.8rem",
-              borderRadius: 6,
-              fontSize: "1rem",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            Start session
-          </button>
-          <div style={{ opacity: 0.5, fontSize: "0.85rem", textAlign: "center" }}>
-            Generates a one-time code. Enter it on freeremotedesk.com<br />from your other device.
-          </div>
-        </>
-      )}
-
-      {(state.kind === "code" || state.kind === "connecting" || state.kind === "connected") && (
-        <>
-          <CodeDisplay code={state.code} />
-          <div style={{ opacity: 0.7, fontSize: "0.9rem" }}>
-            {state.kind === "code" && "Waiting for client…"}
-            {state.kind === "connecting" && "Client joined — establishing WebRTC…"}
-            {state.kind === "connected" && `Connected · ${state.peerState}`}
-          </div>
-          <button onClick={reset}>End session</button>
-        </>
-      )}
-
-      {state.kind === "error" && (
-        <>
-          <div style={{ color: "#ef4444" }}>Error: {state.message}</div>
-          <button onClick={reset}>Try again</button>
-        </>
-      )}
+      {children}
     </div>
   );
 }
@@ -144,12 +202,33 @@ function CodeDisplay({ code }: { code: string }) {
 }
 
 function onRemoteInput(evt: InputEvent) {
-  // Forward to Rust for OS-level input injection via enigo.
-  // Fire-and-forget: dropped events are preferable to blocking input latency.
   invoke("inject_input", { event: evt }).catch((e) => {
     console.warn("inject_input failed", e);
   });
 }
+
+const styles: Record<string, React.CSSProperties> = {
+  primary: {
+    background: "#4ade80",
+    color: "#000",
+    border: 0,
+    padding: "0.9rem 1.8rem",
+    borderRadius: 6,
+    fontSize: "1rem",
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  hint: { opacity: 0.6, fontSize: "0.9rem", textAlign: "center" },
+  error: { color: "#ef4444" },
+  link: {
+    background: "transparent",
+    border: 0,
+    color: "#888",
+    cursor: "pointer",
+    fontSize: "0.85rem",
+    textDecoration: "underline",
+  },
+};
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root missing");

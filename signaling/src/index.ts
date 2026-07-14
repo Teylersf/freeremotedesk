@@ -5,56 +5,67 @@
  * (SDP offers/answers, ICE candidates) between a host agent and a PWA client.
  *
  * The Durable Object is the stateful piece — one instance per pairing/session
- * room, addressed by the pairing code (during pair phase) or the host ID
- * (during a live session).
+ * room, addressed by the pairing code. The Worker itself is stateless.
  *
- * The Worker itself is stateless.
+ * Deployed by each end user to their own Cloudflare account (BYO infra).
  */
 
 export interface Env {
   SESSION: DurableObjectNamespace;
-  AUTH_DB: D1Database;
-  RATE_LIMITER: RateLimit;
-  RP_ID: string;
-  RP_NAME: string;
-  RP_ORIGIN: string;
+  /** Optional comma-separated origin allow-list. Empty = any origin. */
+  ALLOWED_ORIGINS?: string;
 }
 
 export default {
   async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
 
-    if (url.pathname === "/health") {
-      return json({ ok: true, service: "freeremotedesk-signaling" });
+    if (req.method === "OPTIONS") {
+      return cors(new Response(null, { status: 204 }), req, env);
     }
 
-    // WebSocket entry points route to the Durable Object.
+    if (url.pathname === "/health") {
+      return cors(json({ ok: true, service: "freeremotedesk-signaling" }), req, env);
+    }
+
+    // WebSocket entry: /ws/{roomKey}. RoomKey is the pairing code (during pair)
+    // or the persistent host-id (during a session). We don't distinguish here;
+    // the DO is just a two-peer relay identified by that string.
     if (url.pathname.startsWith("/ws/")) {
       const roomKey = url.pathname.slice("/ws/".length);
-      if (!roomKey) return json({ error: "missing room" }, 400);
+      if (!roomKey || roomKey.length > 128) return json({ error: "bad room" }, 400);
       const id = env.SESSION.idFromName(roomKey);
       const stub = env.SESSION.get(id);
       return stub.fetch(req);
     }
 
-    // WebAuthn HTTP endpoints (registration/attestation ceremonies).
-    // Stubs — implemented in Phase 3.
-    if (url.pathname.startsWith("/webauthn/")) {
-      return json({ error: "not implemented (Phase 3)" }, 501);
-    }
-
-    return json({ error: "not found" }, 404);
+    return cors(json({ error: "not found" }, 404), req, env);
   },
 };
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-    },
+    headers: { "content-type": "application/json" },
   });
+}
+
+function cors(res: Response, req: Request, env: Env): Response {
+  const origin = req.headers.get("Origin");
+  const allowed = allowOrigin(origin, env);
+  const h = new Headers(res.headers);
+  if (allowed) h.set("access-control-allow-origin", allowed);
+  h.set("access-control-allow-methods", "GET, POST, OPTIONS");
+  h.set("access-control-allow-headers", "content-type");
+  h.set("vary", "Origin");
+  return new Response(res.body, { status: res.status, headers: h });
+}
+
+function allowOrigin(origin: string | null, env: Env): string | null {
+  if (!origin) return "*";
+  const list = (env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (list.length === 0) return origin; // no restriction — echo the origin
+  return list.includes(origin) ? origin : null;
 }
 
 /**
@@ -79,13 +90,12 @@ export class SessionRoom implements DurableObject {
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
 
-    // Assign a peer ID based on join order. First joiner is "host", second is "client".
-    const peerId = this.peers.size === 0 ? "host" : "client";
     if (this.peers.size >= 2) {
       server.close(1008, "room full");
       return new Response(null, { status: 101, webSocket: client });
     }
 
+    const peerId = this.peers.size === 0 ? "host" : "client";
     server.accept();
     this.peers.set(peerId, server);
 
@@ -93,7 +103,6 @@ export class SessionRoom implements DurableObject {
     server.addEventListener("close", () => this.onClose(peerId));
     server.addEventListener("error", () => this.onClose(peerId));
 
-    // Let the peer know who they are + who else is here.
     server.send(
       JSON.stringify({
         t: "welcome",
@@ -102,7 +111,6 @@ export class SessionRoom implements DurableObject {
       }),
     );
 
-    // If both peers are now present, notify both that the room is ready.
     if (this.peers.size === 2) {
       for (const [id, ws] of this.peers) {
         ws.send(JSON.stringify({ t: "ready", peerId: id === "host" ? "client" : "host" }));
@@ -131,16 +139,15 @@ export class SessionRoom implements DurableObject {
       try {
         ws.close();
       } catch {
-        // ignore
+        /* ignore */
       }
     }
     this.peers.delete(peerId);
-    // Notify the surviving peer that their partner left.
     for (const [, other] of this.peers) {
       try {
         other.send(JSON.stringify({ t: "peer-gone", peerId }));
       } catch {
-        // ignore
+        /* ignore */
       }
     }
   }

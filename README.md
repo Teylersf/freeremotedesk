@@ -1,66 +1,76 @@
 # FreeRemoteDesk
 
-A browser-first remote desktop for developers who want to reach their home dev machine from anywhere. Free, open, passkey-secured, zero server infrastructure.
+Reach your home dev machine from anywhere. In your browser. On your phone. Free forever, because **you** run the whole stack on your own free-tier accounts.
 
-## The pitch
+## Why
 
-- **PWA client** — installs on your phone, tablet, or laptop from the browser. No app-store install required.
-- **Tauri host agent** — small tray app for Windows, macOS, Linux. This is what runs on your dev box.
-- **Peer-to-peer over WebRTC** — video/input traffic goes directly between your devices. We never see it.
-- **Zero-cost operation** — Cloudflare Workers handle the ~200 bytes of pairing signaling on their free tier. No servers to run.
-- **Passkey-secured** — WebAuthn/biometrics as first-class auth; TOTP as fallback (Phase 3).
+- **No middleman.** Signaling runs on your Cloudflare Workers. PWA hosted on your Vercel. Nobody (including us) sits between your devices.
+- **No monthly bill.** Cloudflare + Vercel free tiers easily cover a personal remote-desktop use case. You pay $0.
+- **No app store.** The client is a PWA — install it from your browser onto your phone/tablet/desktop.
+- **P2P over WebRTC.** Video and input flow directly between your host and viewer. Signaling is <1 KB per session.
+- **Passkey-secured** *(Phase 3, not yet shipped)*. Biometric-gated reconnect to your paired hosts.
+
+## Deploy your own instance
+
+Two clicks + one download.
+
+### 1. Deploy signaling to your Cloudflare account
+
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Teylersf/freeremotedesk)
+
+This deploys the `signaling/` Worker to your Cloudflare account. Note the URL it gives you (looks like `https://freeremotedesk-signaling.<your-name>.workers.dev`).
+
+### 2. Deploy the PWA to your Vercel account
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Teylersf/freeremotedesk&root-directory=pwa&env=VITE_SIGNALING_URL&envDescription=Your%20Cloudflare%20signaling%20URL%20from%20step%201&envLink=https://github.com/Teylersf/freeremotedesk/blob/main/docs/DEPLOY.md&project-name=freeremotedesk&repository-name=freeremotedesk-pwa)
+
+Vercel will ask for `VITE_SIGNALING_URL` — paste the URL from step 1.
+
+### 3. Install the agent on the machine you want to reach
+
+Download the installer for your OS from the [latest release](https://github.com/Teylersf/freeremotedesk/releases/latest) and run it.
+
+On first launch it asks for your signaling URL (from step 1) and optionally your PWA URL (from step 2). Then it generates a 6-character code — enter that on your PWA to connect.
+
+Full step-by-step: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ## Repo layout
 
 | Path | What |
 |---|---|
-| `agent/` | Tauri + Rust host agent — WebView2 does WebRTC + `getDisplayMedia`, Rust does input injection via `enigo` |
-| `pwa/` | React + Vite PWA client — served from `freeremotedesk.com` |
-| `signaling/` | Cloudflare Workers SDP/ICE relay via Durable Objects |
-| `docs/` | Architecture, protocol, security, dev-setup |
+| `agent/` | Tauri + Rust host agent — WebView does WebRTC + `getDisplayMedia`, Rust does input injection via `enigo` |
+| `pwa/` | React + Vite + PWA client — the browser viewer |
+| `signaling/` | Cloudflare Workers SDP/ICE relay via a Durable Object |
+| `docs/` | Architecture, protocol, security, deploy, development |
 
-## Quickstart — try it locally
+## Development (running locally without deploying)
 
-Three terminals. All commands from repo root.
-
-```powershell
-# 1. Signaling (Cloudflare Workers in Miniflare)
-pnpm dev:signaling
-#    → http://127.0.0.1:8787
-
-# 2. PWA (the viewer)
-pnpm dev:pwa
-#    → http://localhost:5173
-
-# 3. Agent (the host, opens a Tauri window)
-pnpm dev:agent
-#    (first run compiles ~250 Rust crates, ~4 min; subsequent runs are seconds)
-```
-
-Then:
-
-1. In the **agent window** → click **Start session**. WebView2 will pop up its OS screen-picker; choose your screen or a window.
-2. Copy the 6-char code shown on the agent.
-3. In your browser at **http://localhost:5173** (or on your phone at `http://<your-lan-ip>:5173`) → type the code → **Connect**.
-4. You should see your host screen. Move your mouse / type — events forward to the host via `enigo`.
-5. `Ctrl+Esc` on the client exits the session.
-
-Smoke test just the signaling path (no browsers/agent needed):
+Three terminals from repo root:
 
 ```powershell
-node signaling/scripts/smoke.mjs
+pnpm dev:signaling   # Miniflare on :8787
+pnpm dev:pwa         # Vite on :5173
+pnpm dev:agent       # Tauri window
 ```
 
-## Status
+Agent's setup wizard: put `http://localhost:8787` as the signaling URL.
+PWA's setup screen: same.
 
-**Phase 1 MVP: complete.** WebRTC pipe works end-to-end: agent captures screen, PWA displays it, input events flow back and inject at OS level.
+Smoke test the signaling relay: `pnpm --filter @freeremotedesk/signaling smoke` (needs `pnpm dev:signaling` running).
 
-**Not yet built:** WebAuthn pairing (Phase 3), production deploy (Phase 2), installers + system tray (Phase 4). See `ARCHITECTURE.md` for the phase plan.
+Full dev setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## Architecture in one paragraph
 
-The agent is a Tauri v2 app whose WebView2 uses `navigator.mediaDevices.getDisplayMedia()` for capture and standard browser WebRTC for the peer connection. That means we skip building a native video codec pipeline (which is what makes a full RustDesk fork a 6-month project). The client is a plain PWA using the exact same WebRTC APIs. Signaling is a Cloudflare Worker with a Durable Object per pairing code — the Worker relays SDP/ICE, video content is E2E encrypted by DTLS-SRTP and never touches our infra. Input events return over a WebRTC DataChannel and get injected on the host by Rust `enigo`.
+The agent is a Tauri v2 app whose WebView uses `navigator.mediaDevices.getDisplayMedia()` for capture and standard browser WebRTC for the peer connection. That skips building a native video codec pipeline (which is what makes a full RustDesk fork a multi-month project). The client is a plain PWA using the exact same WebRTC APIs. Signaling is a Cloudflare Worker with a Durable Object per pairing code — the Worker relays SDP/ICE, video content is E2E encrypted by DTLS-SRTP and never touches the signaling infrastructure. Input events return over a WebRTC DataChannel and get injected on the host by Rust `enigo`.
+
+Full design rationale: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+## Status
+
+**Phase 1 MVP complete** (WebRTC pipe works, input injection works, BYO-infra pivot done).
+**Phase 3 (WebAuthn) and Phase 4 (installers, tray) in progress.**
 
 ## License
 
-TBD before public release. Likely Apache-2.0 (permissive, matches ecosystem).
+Apache-2.0 (pending — will be locked in before first public release).

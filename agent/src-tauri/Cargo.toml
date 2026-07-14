@@ -22,6 +22,7 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 rand = "0.8"
 thiserror = "1"
+getrandom = "0.2"
 
 # Input injection: mouse + keyboard synthesis at OS level.
 # Cross-platform: Windows (SendInput), macOS (CGEvent), Linux (evdev/uinput/xdo).

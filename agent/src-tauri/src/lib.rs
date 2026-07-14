@@ -3,6 +3,7 @@
 //! Splits into a `lib` so both the desktop binary (`main.rs`) and future
 //! mobile targets (Android via `tauri-android`) can share the runtime.
 
+mod config;
 mod input;
 mod pairing;
 
@@ -21,6 +22,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pairing::request_pairing_code,
             input::inject_input,
+            config::get_config,
+            config::set_config,
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch FreeRemoteDesk agent");

@@ -1,9 +1,13 @@
 import { useState } from "react";
 import { PeerClient } from "../webrtc/client";
 
-type Props = { onConnected: (client: PeerClient) => void };
+type Props = {
+  signalingUrl: string;
+  onConnected: (client: PeerClient) => void;
+  onOpenSettings: () => void;
+};
 
-export function ConnectView({ onConnected }: Props) {
+export function ConnectView({ signalingUrl, onConnected, onOpenSettings }: Props) {
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -15,7 +19,7 @@ export function ConnectView({ onConnected }: Props) {
     if (!canSubmit) return;
     setBusy(true);
     setStatus("Connecting…");
-    const client = new PeerClient(code.trim().toLowerCase());
+    const client = new PeerClient(code.trim().toLowerCase(), signalingUrl);
     try {
       await client.connect();
       onConnected(client);
@@ -52,6 +56,22 @@ export function ConnectView({ onConnected }: Props) {
       </button>
 
       {status && <div className="muted">{status}</div>}
+
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        style={{
+          background: "transparent",
+          border: 0,
+          color: "#888",
+          cursor: "pointer",
+          fontSize: "0.75rem",
+          textDecoration: "underline",
+          padding: 0,
+        }}
+      >
+        Change signaling server
+      </button>
     </form>
   );
 }

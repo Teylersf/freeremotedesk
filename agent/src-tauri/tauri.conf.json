@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; media-src 'self' blob: mediastream:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:8787 http://localhost:8787 https://signaling.freeremotedesk.com wss://signaling.freeremotedesk.com stun: stuns:"
+      "csp": "default-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; media-src 'self' blob: mediastream:; connect-src 'self' ipc: http://ipc.localhost http: https: ws: wss: stun: stuns:"
     }
   },
   "bundle": {

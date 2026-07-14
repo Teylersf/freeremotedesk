@@ -4,7 +4,7 @@
  * Flow:
  *   1. Rust generates pairing code.
  *   2. User clicks "Start" → we call getDisplayMedia() to capture the screen.
- *      Browser/WebView shows the standard screen-picker; user chooses monitor.
+ *      WebView shows the standard screen-picker; user chooses monitor.
  *   3. Open WebSocket to signaling: /ws/{code}
  *   4. Receive `welcome` — we're the "host" (first joiner).
  *   5. Receive `ready` — the client has joined the room.
@@ -22,9 +22,6 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.cloudflare.com:3478" },
 ];
 
-const SIGNALING_URL =
-  (import.meta as ImportMeta).env?.VITE_SIGNALING_URL ?? "ws://localhost:8787";
-
 export type HostPeerEvents = {
   onStateChange: (state: RTCIceConnectionState) => void;
   onInput: (evt: InputEvent) => void;
@@ -32,8 +29,23 @@ export type HostPeerEvents = {
   onError: (err: Error) => void;
 };
 
+/**
+ * Normalize a user-supplied signaling URL to a WebSocket URL.
+ * Accepts https:// (converted to wss://), http:// (to ws://), or ws(s)://
+ * verbatim. Strips trailing slash.
+ */
+export function toWsUrl(userUrl: string): string {
+  const trimmed = userUrl.trim().replace(/\/+$/, "");
+  if (trimmed.startsWith("wss://") || trimmed.startsWith("ws://")) return trimmed;
+  if (trimmed.startsWith("https://")) return `wss://${trimmed.slice("https://".length)}`;
+  if (trimmed.startsWith("http://")) return `ws://${trimmed.slice("http://".length)}`;
+  // Bare host — assume secure.
+  return `wss://${trimmed}`;
+}
+
 export class HostPeer {
   readonly code: string;
+  readonly signalingWsUrl: string;
   private pc: RTCPeerConnection;
   private ws: WebSocket | null = null;
   private stream: MediaStream | null = null;
@@ -42,15 +54,14 @@ export class HostPeer {
   private clientReady = false;
   private closed = false;
 
-  constructor(code: string) {
+  constructor(code: string, signalingUrl: string) {
     this.code = code;
+    this.signalingWsUrl = toWsUrl(signalingUrl);
     this.pc = new RTCPeerConnection({
       iceServers: DEFAULT_ICE_SERVERS,
       bundlePolicy: "max-bundle",
     });
 
-    // Pre-create the input DataChannel — must be created before setLocalDescription
-    // so it's negotiated in the initial offer.
     this.inputChannel = this.pc.createDataChannel("input", { ordered: true });
     this.inputChannel.addEventListener("message", (evt) => {
       try {
@@ -58,7 +69,7 @@ export class HostPeer {
         const parsed = JSON.parse(data) as InputEvent;
         this.handlers.onInput?.(parsed);
       } catch {
-        // ignore malformed input
+        /* ignore */
       }
     });
 
@@ -78,9 +89,7 @@ export class HostPeer {
     this.handlers[event] = handler;
   }
 
-  /** Prompt the user to pick a screen/window and start capture. */
   async captureScreen(): Promise<void> {
-    // Video + audio (system audio, when available).
     this.stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 60 } },
       audio: true,
@@ -88,7 +97,6 @@ export class HostPeer {
     for (const track of this.stream.getTracks()) {
       this.pc.addTrack(track, this.stream);
     }
-    // If the user hits the "stop sharing" browser prompt, wind down cleanly.
     for (const track of this.stream.getVideoTracks()) {
       track.addEventListener("ended", () => this.close("user stopped sharing"));
     }
@@ -96,8 +104,8 @@ export class HostPeer {
 
   async connect(): Promise<void> {
     if (this.closed) throw new Error("host closed");
-    const wsUrl = `${SIGNALING_URL}/ws/${encodeURIComponent(this.code)}`;
-    const ws = new WebSocket(wsUrl);
+    const url = `${this.signalingWsUrl}/ws/${encodeURIComponent(this.code)}`;
+    const ws = new WebSocket(url);
     this.ws = ws;
 
     await new Promise<void>((resolve, reject) => {
@@ -107,7 +115,7 @@ export class HostPeer {
       };
       const onError = () => {
         ws.removeEventListener("open", onOpen);
-        reject(new Error(`signaling ws failed to open at ${wsUrl}`));
+        reject(new Error(`signaling ws failed at ${url}`));
       };
       ws.addEventListener("open", onOpen, { once: true });
       ws.addEventListener("error", onError, { once: true });
@@ -130,18 +138,14 @@ export class HostPeer {
             throw new Error(`unexpected peer role: ${msg.peerId}`);
           }
           break;
-
         case "ready":
-          // Client joined — start negotiation from our end (we're the offerer).
           this.clientReady = true;
           await this.sendOffer();
           break;
-
         case "sdp":
           if (msg.kind !== "answer") return;
           await this.pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
           break;
-
         case "ice":
           if (msg.candidate) {
             try {
@@ -151,7 +155,6 @@ export class HostPeer {
             }
           }
           break;
-
         case "peer-gone":
           this.close("client left");
           break;
