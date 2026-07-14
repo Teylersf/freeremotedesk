@@ -150,6 +150,9 @@ Known intermittent bug on Cloudflare's side. Tell the user to click "Sign up for
 **`vercel deploy` errors "Project not found"**
 The user has never used Vercel. `vercel deploy --prod --yes` should trigger the project-creation flow. If it doesn't, run `vercel link` interactively first.
 
+**`vercel deploy` install step fails with "no lockfile found" or `--frozen-lockfile` errors**
+Vercel deploys `pwa/` as its own project (per the `root-directory=pwa` in the Deploy Button URL), so it doesn't see the workspace-level `pnpm-lock.yaml`. The main-branch `pwa/vercel.json` uses `pnpm install --no-frozen-lockfile` for this reason. If you're deploying an older tag with `--frozen-lockfile` set, edit `pwa/vercel.json` to drop that flag, or override it in the Vercel project's Build & Development Settings.
+
 **PWA loads but says "not a FreeRemoteDesk signaling server" during setup**
 `VITE_SIGNALING_URL` didn't make it into the build. Verify: `vercel env ls` should show `VITE_SIGNALING_URL` under Production. If missing, re-add and re-deploy.
 
