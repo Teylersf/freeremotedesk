@@ -151,7 +151,10 @@ Known intermittent bug on Cloudflare's side. Tell the user to click "Sign up for
 The user has never used Vercel. `vercel deploy --prod --yes` should trigger the project-creation flow. If it doesn't, run `vercel link` interactively first.
 
 **`vercel deploy` install step fails with "no lockfile found" or `--frozen-lockfile` errors**
-Vercel deploys `pwa/` as its own project (per the `root-directory=pwa` in the Deploy Button URL), so it doesn't see the workspace-level `pnpm-lock.yaml`. The main-branch `pwa/vercel.json` uses `pnpm install --no-frozen-lockfile` for this reason. If you're deploying an older tag with `--frozen-lockfile` set, edit `pwa/vercel.json` to drop that flag, or override it in the Vercel project's Build & Development Settings.
+Vercel deploys `pwa/` as its own project (per the `root-directory=pwa` in the Deploy Button URL), so it doesn't see the workspace-level `pnpm-lock.yaml`. The main-branch `pwa/vercel.json` uses `npm install` instead of pnpm — since `pwa/package.json` has no `workspace:*` deps, standalone npm install works fine and avoids pnpm-specific issues entirely.
+
+**`vercel deploy` install step fails with `ERR_INVALID_THIS` / `Value of "this" must be of type URLSearchParams`**
+This is a pnpm-9-on-old-Node runtime bug that hits on Vercel's default builder. The main-branch `pwa/vercel.json` sidesteps it by using `npm install` + `npm run build` instead of pnpm. If you're deploying an older tag that still uses pnpm, either update `pwa/vercel.json` to use npm, or set a project env var `NPM_CONFIG_PACKAGE_MANAGER=pnpm@9.12.0` to force corepack.
 
 **PWA loads but says "not a FreeRemoteDesk signaling server" during setup**
 `VITE_SIGNALING_URL` didn't make it into the build. Verify: `vercel env ls` should show `VITE_SIGNALING_URL` under Production. If missing, re-add and re-deploy.
