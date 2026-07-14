@@ -1,49 +1,69 @@
 # FreeRemoteDesk
 
-Reach your home dev machine from anywhere. In your browser. On your phone. Free forever, because **you** run the whole stack on your own free-tier accounts.
+Reach your home dev machine from any browser. Zero servers you run. Zero monthly cost. You own the whole stack.
+
+## Setup — pick your path
+
+### 🤖 Path A: Hand this repo to your AI agent (recommended for vibe coders)
+
+Open your AI coding tool (Claude Code, Cursor, Aider, Codex, Continue — anything with a terminal) and paste one line:
+
+> **"Set up FreeRemoteDesk for me. Read AGENTS.md at https://github.com/Teylersf/freeremotedesk/blob/main/AGENTS.md and follow it exactly."**
+
+Your agent will:
+- Check you have `node`, `pnpm`, `gh` installed (install if missing)
+- Prompt you to log into `gh`, `wrangler`, and `vercel` (three one-time browser sign-ins)
+- Deploy the signaling Worker to your Cloudflare account
+- Deploy the PWA to your Vercel account with the right env var
+- Download the host installer for your OS
+- Hand you the two URLs to paste into the agent's first-run wizard
+
+**Total user work:** three CLI logins + one installer double-click + copy-paste two URLs.
+
+### 🖱️ Path B: Two Deploy Buttons + one download (no AI needed)
+
+1. Deploy signaling to your Cloudflare: [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Teylersf/freeremotedesk)
+2. Deploy PWA to your Vercel: [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Teylersf/freeremotedesk&root-directory=pwa&env=VITE_SIGNALING_URL&envDescription=Cloudflare%20signaling%20URL%20from%20step%201&project-name=freeremotedesk&repository-name=freeremotedesk-pwa)
+3. Download the [latest release](https://github.com/Teylersf/freeremotedesk/releases/latest), install, paste the two URLs into the wizard.
+
+Full walkthrough: [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+### 🧑‍💻 Path C: Run the setup script yourself
+
+If you have the CLIs installed and don't want to click through UIs:
+
+```bash
+git clone https://github.com/Teylersf/freeremotedesk
+cd freeremotedesk
+bash scripts/setup.sh      # macOS/Linux
+# or
+pwsh scripts/setup.ps1     # Windows
+```
+
+The script does everything Path A does, minus the AI narration.
+
+---
 
 ## Why
 
-- **No middleman.** Signaling runs on your Cloudflare Workers. PWA hosted on your Vercel. Nobody (including us) sits between your devices.
-- **No monthly bill.** Cloudflare + Vercel free tiers easily cover a personal remote-desktop use case. You pay $0.
-- **No app store.** The client is a PWA — install it from your browser onto your phone/tablet/desktop.
-- **P2P over WebRTC.** Video and input flow directly between your host and viewer. Signaling is <1 KB per session.
-- **Passkey-secured** *(Phase 3, not yet shipped)*. Biometric-gated reconnect to your paired hosts.
-
-## Deploy your own instance
-
-Two clicks + one download.
-
-### 1. Deploy signaling to your Cloudflare account
-
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Teylersf/freeremotedesk)
-
-This deploys the `signaling/` Worker to your Cloudflare account. Note the URL it gives you (looks like `https://freeremotedesk-signaling.<your-name>.workers.dev`).
-
-### 2. Deploy the PWA to your Vercel account
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Teylersf/freeremotedesk&root-directory=pwa&env=VITE_SIGNALING_URL&envDescription=Your%20Cloudflare%20signaling%20URL%20from%20step%201&envLink=https://github.com/Teylersf/freeremotedesk/blob/main/docs/DEPLOY.md&project-name=freeremotedesk&repository-name=freeremotedesk-pwa)
-
-Vercel will ask for `VITE_SIGNALING_URL` — paste the URL from step 1.
-
-### 3. Install the agent on the machine you want to reach
-
-Download the installer for your OS from the [latest release](https://github.com/Teylersf/freeremotedesk/releases/latest) and run it.
-
-On first launch it asks for your signaling URL (from step 1) and optionally your PWA URL (from step 2). Then it generates a 6-character code — enter that on your PWA to connect.
-
-Full step-by-step: [`docs/DEPLOY.md`](docs/DEPLOY.md).
+- **No middleman.** Signaling on your Cloudflare, PWA on your Vercel. Nobody (including us) sits between your devices.
+- **No monthly bill.** Free tiers cover a personal instance easily. You pay $0.
+- **No app store.** The PWA installs from any browser onto phone/tablet/desktop.
+- **Direct P2P over WebRTC.** Video and input flow between your two devices; signaling is <1 KB per session.
+- **Passkey-secured saved hosts** *(v0.2.0, coming next)* — biometric reconnect without typing codes.
 
 ## Repo layout
 
 | Path | What |
 |---|---|
-| `agent/` | Tauri + Rust host agent — WebView does WebRTC + `getDisplayMedia`, Rust does input injection via `enigo` |
-| `pwa/` | React + Vite + PWA client — the browser viewer |
-| `signaling/` | Cloudflare Workers SDP/ICE relay via a Durable Object |
-| `docs/` | Architecture, protocol, security, deploy, development |
+| `agent/` | Tauri v2 + Rust host agent — WebView does WebRTC + `getDisplayMedia`, Rust does OS input injection via `enigo` |
+| `pwa/` | React + Vite PWA — the browser viewer |
+| `signaling/` | Cloudflare Workers Durable Object relay |
+| `scripts/setup.{sh,ps1}` | One-shot automated deploy |
+| `AGENTS.md` | Structured instructions for AI agents doing setup on your behalf |
+| `docs/` | Architecture, deploy, protocol, security, development |
 
-## Development (running locally without deploying)
+## Local development
 
 Three terminals from repo root:
 
@@ -53,24 +73,24 @@ pnpm dev:pwa         # Vite on :5173
 pnpm dev:agent       # Tauri window
 ```
 
-Agent's setup wizard: put `http://localhost:8787` as the signaling URL.
-PWA's setup screen: same.
+Both wizards accept `http://localhost:8787` as the signaling URL.
 
-Smoke test the signaling relay: `pnpm --filter @freeremotedesk/signaling smoke` (needs `pnpm dev:signaling` running).
+Smoke test signaling: `pnpm --filter @freeremotedesk/signaling smoke`.
 
-Full dev setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+Full setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
-## Architecture in one paragraph
+## Architecture (30-second version)
 
-The agent is a Tauri v2 app whose WebView uses `navigator.mediaDevices.getDisplayMedia()` for capture and standard browser WebRTC for the peer connection. That skips building a native video codec pipeline (which is what makes a full RustDesk fork a multi-month project). The client is a plain PWA using the exact same WebRTC APIs. Signaling is a Cloudflare Worker with a Durable Object per pairing code — the Worker relays SDP/ICE, video content is E2E encrypted by DTLS-SRTP and never touches the signaling infrastructure. Input events return over a WebRTC DataChannel and get injected on the host by Rust `enigo`.
+The agent is a Tauri app whose WebView calls `navigator.mediaDevices.getDisplayMedia()` and standard browser WebRTC — no custom video codec, no native capture layer. The PWA client uses the same WebRTC APIs. Signaling is a Cloudflare Worker + one Durable Object per pairing code — it relays SDP/ICE, video is E2E encrypted by DTLS-SRTP and never touches signaling infrastructure. Input events return over a WebRTC DataChannel and get injected on the host via Rust `enigo`.
 
-Full design rationale: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Full design + rationale: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Status
 
-**Phase 1 MVP complete** (WebRTC pipe works, input injection works, BYO-infra pivot done).
-**Phase 3 (WebAuthn) and Phase 4 (installers, tray) in progress.**
+**v0.1.0 shipped** — Phase 1 MVP + BYO-infra pivot + Phase 4 packaging complete. CI green on Windows/macOS/Linux. Installers on the [releases page](https://github.com/Teylersf/freeremotedesk/releases).
+
+**v0.2.0 planned** — WebAuthn/passkey saved hosts, biometric reconnect, session PIN as fallback.
 
 ## License
 
-Apache-2.0 (pending — will be locked in before first public release).
+Apache-2.0 (pending — will be locked in before v0.2.0).
