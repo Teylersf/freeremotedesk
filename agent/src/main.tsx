@@ -1,6 +1,11 @@
-import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import { HostPeer } from "./webrtc/host";
 import { SetupWizard } from "./SetupWizard";
 import type { InputEvent } from "./protocol";
@@ -10,11 +15,11 @@ type UiState =
   | { kind: "loading" }
   | { kind: "setup"; current: AgentConfig }
   | { kind: "idle"; config: AgentConfig; trusted: TrustedClientSummary[] }
-  | { kind: "listening"; config: AgentConfig; pairCode: string | null; sessionState: string | null; trusted: TrustedClientSummary[] }
+  | { kind: "listening"; config: AgentConfig; trusted: TrustedClientSummary[]; pairCode: string | null; sessionState: string | null }
+  | { kind: "incoming"; config: AgentConfig; trusted: TrustedClientSummary[]; clientId: string; clientName: string }
   | { kind: "error"; config: AgentConfig | null; message: string };
 
 function useHostName(): string {
-  // Basic guess. In v0.2.x we'll let the user override in Settings.
   return "My computer";
 }
 
@@ -27,11 +32,20 @@ function App() {
   useEffect(() => {
     document.title = "FreeRemoteDesk Agent";
     void bootstrap();
+    // Request notification permission opportunistically.
+    void ensureNotificationPermission();
     return () => {
       persistentPeerRef.current?.close();
       pairPeerRef.current?.close();
     };
   }, []);
+
+  async function ensureNotificationPermission() {
+    try {
+      const granted = await isPermissionGranted();
+      if (!granted) await requestPermission();
+    } catch { /* ignore — notifications are best-effort */ }
+  }
 
   async function bootstrap() {
     try {
@@ -41,6 +55,14 @@ function App() {
         return;
       }
       const trusted = await invoke<TrustedClientSummary[]>("list_trusted_clients");
+
+      // Auto-listen if we have any trusted clients — user doesn't need to click.
+      // We open the WS but do NOT capture the screen yet; capture happens on
+      // acceptIncoming() (a user click) when a client tries to connect.
+      if (trusted.length > 0) {
+        await autoStartListening(config, trusted);
+        return;
+      }
       setState({ kind: "idle", config, trusted });
     } catch (err) {
       setState({
@@ -52,65 +74,126 @@ function App() {
   }
 
   async function refreshTrusted(): Promise<TrustedClientSummary[]> {
+    try { return await invoke<TrustedClientSummary[]>("list_trusted_clients"); }
+    catch { return []; }
+  }
+
+  /** Open the persistent WS without capturing screen — auto-called on boot. */
+  async function autoStartListening(
+    config: AgentConfig,
+    trusted: TrustedClientSummary[],
+  ) {
     try {
-      return await invoke<TrustedClientSummary[]>("list_trusted_clients");
-    } catch {
-      return [];
+      const persistent = wireHostPeerHandlers(
+        new HostPeer({
+          code: `host-${config.agent_id}`,
+          signalingUrl: config.signaling_url!,
+          mode: "persistent",
+          hostId: config.agent_id,
+          hostName,
+        }),
+        config,
+        trusted,
+      );
+      persistentPeerRef.current = persistent;
+      await persistent.connect();
+
+      setState({
+        kind: "listening",
+        config,
+        trusted,
+        pairCode: null,
+        sessionState: null,
+      });
+    } catch (err) {
+      // If signaling URL is unreachable, fall back to idle.
+      setState({
+        kind: "idle",
+        config,
+        trusted,
+      });
+      console.warn("auto-listen failed:", err);
     }
   }
 
-  /** Start the persistent "server" mode — captures screen once, listens
-   *  for trusted-device reconnects, and also can accept ad-hoc pairing codes. */
-  async function startListening(config: AgentConfig) {
-    try {
-      const persistent = new HostPeer({
-        code: `host-${config.agent_id}`,
-        signalingUrl: config.signaling_url!,
-        mode: "persistent",
-        hostId: config.agent_id,
-        hostName,
-      });
-      persistentPeerRef.current = persistent;
+  function wireHostPeerHandlers(
+    peer: HostPeer,
+    config: AgentConfig,
+    trusted: TrustedClientSummary[],
+  ): HostPeer {
+    peer.on("onInput", onRemoteInput);
 
-      // Capture screen once — user gesture is required and this click IS one.
+    peer.on("onStateChange", (s) =>
+      setState((prev) =>
+        prev.kind === "listening" ? { ...prev, sessionState: s } : prev,
+      ),
+    );
+
+    peer.on("onSessionEnded", async () => {
+      const fresh = await refreshTrusted();
+      setState((prev) =>
+        prev.kind === "listening" || prev.kind === "incoming"
+          ? { kind: "listening", config, trusted: fresh, pairCode: null, sessionState: null }
+          : prev,
+      );
+    });
+
+    peer.on("onIncomingAuth", async (clientId) => {
+      const fresh = await refreshTrusted();
+      const client = fresh.find((c) => c.client_id === clientId);
+      const clientName = client?.name ?? "A trusted device";
+
+      // Fire OS notification + focus window.
+      try {
+        await sendNotification({
+          title: "FreeRemoteDesk",
+          body: `${clientName} is trying to reconnect — click to accept.`,
+        });
+      } catch { /* best effort */ }
+      try { await invoke("focus_window"); } catch { /* best effort */ }
+
+      setState({ kind: "incoming", config, trusted: fresh, clientId, clientName });
+    });
+
+    peer.on("onError", (err) =>
+      setState({ kind: "error", config, message: err.message }),
+    );
+
+    peer.on("onClose", (reason) => {
+      persistentPeerRef.current = null;
+      setState({ kind: "idle", config, trusted });
+      if (reason) console.log("persistent host closed:", reason);
+    });
+
+    return peer;
+  }
+
+  /** User-gesture handler: called when user clicks "Start listening" on the
+   *  idle screen. Captures the screen up-front for the case where they want
+   *  to start listening BEFORE any trusted client exists yet. */
+  async function manuallyStartListening(config: AgentConfig) {
+    try {
+      const persistent = wireHostPeerHandlers(
+        new HostPeer({
+          code: `host-${config.agent_id}`,
+          signalingUrl: config.signaling_url!,
+          mode: "persistent",
+          hostId: config.agent_id,
+          hostName,
+        }),
+        config,
+        [],
+      );
+      persistentPeerRef.current = persistent;
       await persistent.captureScreen();
       await persistent.connect();
-
-      persistent.on("onInput", onRemoteInput);
-      persistent.on("onStateChange", (s) =>
-        setState((prev) =>
-          prev.kind === "listening" ? { ...prev, sessionState: s } : prev,
-        ),
-      );
-      persistent.on("onSessionEnded", () => {
-        setState((prev) =>
-          prev.kind === "listening" ? { ...prev, sessionState: null } : prev,
-        );
-      });
-      persistent.on("onClientAuthed", async () => {
-        const trusted = await refreshTrusted();
-        setState((prev) => (prev.kind === "listening" ? { ...prev, trusted } : prev));
-      });
-      persistent.on("onError", (err) =>
-        setState({ kind: "error", config, message: err.message }),
-      );
-      persistent.on("onClose", (reason) => {
-        persistentPeerRef.current = null;
-        setState({
-          kind: "idle",
-          config,
-          trusted: [],
-        });
-        if (reason) console.log("persistent host closed:", reason);
-      });
-
       const trusted = await refreshTrusted();
       setState({
         kind: "listening",
         config,
+        trusted,
         pairCode: null,
         sessionState: null,
-        trusted,
       });
     } catch (err) {
       setState({
@@ -119,6 +202,48 @@ function App() {
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  /** User clicks Accept on the incoming-auth prompt. */
+  async function acceptIncoming() {
+    const peer = persistentPeerRef.current;
+    if (!peer) return;
+    try {
+      await peer.acceptIncoming();     // captureScreen + auth.ok + WebRTC
+      setState((prev) =>
+        prev.kind === "incoming"
+          ? { kind: "listening", config: prev.config, trusted: prev.trusted, pairCode: null, sessionState: "connecting" }
+          : prev,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // If user cancelled the screen picker, go back to listening.
+      if (msg.includes("Permission denied") || msg.includes("NotAllowed")) {
+        peer.rejectIncoming("user cancelled screen selection");
+        setState((prev) =>
+          prev.kind === "incoming"
+            ? { kind: "listening", config: prev.config, trusted: prev.trusted, pairCode: null, sessionState: null }
+            : prev,
+        );
+        return;
+      }
+      setState((prev) => ({
+        kind: "error",
+        config: prev.kind !== "loading" && "config" in prev && prev.config ? prev.config : null,
+        message: msg,
+      }));
+    }
+  }
+
+  function declineIncoming() {
+    const peer = persistentPeerRef.current;
+    if (!peer) return;
+    peer.rejectIncoming("declined by user");
+    setState((prev) =>
+      prev.kind === "incoming"
+        ? { kind: "listening", config: prev.config, trusted: prev.trusted, pairCode: null, sessionState: null }
+        : prev,
+    );
   }
 
   async function startPairCode(config: AgentConfig) {
@@ -133,9 +258,18 @@ function App() {
       });
       pairPeerRef.current = pair;
 
-      // We don't need to captureScreen() again if a persistent peer already did.
-      // But if we're in idle mode (no listening), capture now.
-      if (!persistentPeerRef.current) {
+      // If persistent peer already captured, reuse. Otherwise capture now.
+      const persistent = persistentPeerRef.current;
+      if (persistent) {
+        // TypeScript is unhappy about private access; use bracket notation for hack.
+        const persistentStream = (persistent as unknown as { stream: MediaStream | null }).stream;
+        if (persistentStream) {
+          // Share the same stream instance.
+          (pair as unknown as { stream: MediaStream }).stream = persistentStream;
+        } else {
+          await pair.captureScreen();
+        }
+      } else {
         await pair.captureScreen();
       }
       await pair.connect();
@@ -145,9 +279,7 @@ function App() {
         pairPeerRef.current = null;
         const trusted = await refreshTrusted();
         setState((prev) =>
-          prev.kind === "listening"
-            ? { ...prev, pairCode: null, trusted }
-            : prev,
+          prev.kind === "listening" ? { ...prev, pairCode: null, trusted } : prev,
         );
       });
       pair.on("onError", (err) =>
@@ -169,7 +301,9 @@ function App() {
   async function revoke(clientId: string) {
     await invoke("revoke_trusted_client", { clientId });
     const trusted = await refreshTrusted();
-    setState((prev) => (prev.kind === "listening" ? { ...prev, trusted } : prev));
+    setState((prev) =>
+      prev.kind === "listening" ? { ...prev, trusted } : prev,
+    );
   }
 
   function openSettings() {
@@ -199,7 +333,7 @@ function App() {
   if (state.kind === "setup") {
     return (
       <Layout>
-        <SetupWizard current={state.current} onSaved={(cfg) => bootstrap()} />
+        <SetupWizard current={state.current} onSaved={() => bootstrap()} />
       </Layout>
     );
   }
@@ -216,18 +350,39 @@ function App() {
     );
   }
 
+  if (state.kind === "incoming") {
+    return (
+      <Layout>
+        <h1 style={{ margin: 0 }}>FreeRemoteDesk</h1>
+        <div style={styles.incomingCard}>
+          <div style={styles.incomingTitle}>Incoming connection</div>
+          <div style={styles.incomingSub}>
+            <b>{state.clientName}</b> wants to reconnect.
+          </div>
+          <div style={styles.incomingSub}>
+            You'll be asked to pick a screen or window to share.
+          </div>
+          <div style={{ display: "flex", gap: "0.6rem", marginTop: "0.4rem" }}>
+            <button onClick={acceptIncoming} style={styles.primary}>Accept</button>
+            <button onClick={declineIncoming}>Decline</button>
+          </div>
+        </div>
+      </Layout>
+    );
+  }
+
   return (
     <Layout>
       <h1 style={{ margin: 0 }}>FreeRemoteDesk</h1>
 
       {state.kind === "idle" && (
         <>
-          <button onClick={() => startListening(state.config)} style={styles.primary}>
+          <button onClick={() => manuallyStartListening(state.config)} style={styles.primary}>
             Start listening
           </button>
           <div style={styles.hint}>
             You'll pick which screen to share. Then trusted devices can
-            reconnect anytime with no code.
+            reconnect anytime — you'll get a prompt each time.
           </div>
         </>
       )}
@@ -239,11 +394,11 @@ function App() {
             <span>
               {state.sessionState
                 ? `Session · ${state.sessionState}`
-                : "Listening"}
+                : `Listening · ${state.trusted.length} trusted device${state.trusted.length === 1 ? "" : "s"}`}
             </span>
           </div>
 
-          {state.trusted.length > 0 ? (
+          {state.trusted.length > 0 && (
             <div style={styles.list}>
               <div style={styles.listTitle}>Trusted devices</div>
               {state.trusted.map((tc) => (
@@ -255,8 +410,6 @@ function App() {
                 </div>
               ))}
             </div>
-          ) : (
-            <div style={styles.hint}>No trusted devices yet.</div>
           )}
 
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
@@ -357,39 +510,37 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.9rem",
   },
   dot: {
-    width: 8,
-    height: 8,
-    borderRadius: "50%",
-    background: "#4ade80",
-    boxShadow: "0 0 8px #4ade80",
+    width: 8, height: 8, borderRadius: "50%",
+    background: "#4ade80", boxShadow: "0 0 8px #4ade80",
   },
   list: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "0.4rem",
-    width: "100%",
-    maxWidth: 360,
-    background: "#171717",
-    border: "1px solid #2a2a2a",
-    borderRadius: 6,
-    padding: "0.6rem",
+    display: "flex", flexDirection: "column", gap: "0.4rem",
+    width: "100%", maxWidth: 360,
+    background: "#171717", border: "1px solid #2a2a2a",
+    borderRadius: 6, padding: "0.6rem",
   },
   listTitle: { opacity: 0.5, fontSize: "0.75rem", textTransform: "uppercase" },
   listRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
+    display: "flex", justifyContent: "space-between", alignItems: "center",
     padding: "0.3rem 0",
   },
   linkBtn: {
-    background: "transparent",
-    border: 0,
-    color: "#888",
-    cursor: "pointer",
-    fontSize: "0.85rem",
-    textDecoration: "underline",
+    background: "transparent", border: 0, color: "#888",
+    cursor: "pointer", fontSize: "0.85rem", textDecoration: "underline",
     padding: 0,
   },
+  incomingCard: {
+    display: "flex", flexDirection: "column", gap: "0.7rem",
+    background: "#171717", border: "1px solid #4ade80",
+    borderRadius: 10, padding: "1.4rem",
+    maxWidth: 400, width: "100%",
+    boxShadow: "0 0 24px rgba(74, 222, 128, 0.35)",
+  },
+  incomingTitle: {
+    color: "#4ade80", fontSize: "0.75rem",
+    textTransform: "uppercase", letterSpacing: "0.05em",
+  },
+  incomingSub: { fontSize: "0.95rem", lineHeight: 1.5, opacity: 0.85 },
 };
 
 const root = document.getElementById("root");

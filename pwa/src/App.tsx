@@ -5,6 +5,7 @@ import { SessionView } from "./components/SessionView";
 import { SetupScreen } from "./components/SetupScreen";
 import { clearSignalingUrl, getSignalingUrl } from "./config";
 import { Landing } from "./landing/Landing";
+import { consumeTrustParamFromUrl } from "./savedHosts";
 import type { PeerClient } from "./webrtc/client";
 
 type AppState =
@@ -16,6 +17,9 @@ type AppState =
 function initialState(): AppState {
   const path = typeof window !== "undefined" ? window.location.pathname : "/";
   if (!path.startsWith("/connect")) return { kind: "landing" };
+  // If the user opened a bookmarked trust URL, decode + persist the record.
+  // consumeTrustParamFromUrl also strips the ?trust=… from the visible URL.
+  consumeTrustParamFromUrl();
   const url = getSignalingUrl();
   return url ? { kind: "connect", signalingUrl: url } : { kind: "setup" };
 }

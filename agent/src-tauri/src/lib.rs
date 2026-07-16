@@ -8,11 +8,11 @@ mod tray;
 use tauri::Manager;
 use tauri_plugin_autostart::MacosLauncher;
 
-/// Entry point wired up by both `main.rs` and mobile shims.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
@@ -43,7 +43,23 @@ pub fn run() {
             config::store_trusted_client,
             config::verify_trusted_client,
             config::revoke_trusted_client,
+            focus_window,
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch FreeRemoteDesk agent");
+}
+
+/// Bring the main window to the front + unhide + focus.
+/// Used when a trusted client is trying to reconnect and we need the user
+/// to grant screen capture permission (a user gesture on the click).
+#[tauri::command]
+fn focus_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = win.set_always_on_top(true);
+        let _ = win.set_always_on_top(false);
+    }
+    Ok(())
 }

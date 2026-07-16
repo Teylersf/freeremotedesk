@@ -4,15 +4,17 @@
  * Two operating modes:
  *
  *   1. `pair` mode: opens WS to /ws/{pairing_code}. First-time pair with a
- *      new client. No pre-connect auth (the code IS the auth). After WebRTC
- *      connects, the client may send a `pair.save` control message to
- *      register itself as a trusted device.
+ *      new client. The user has just clicked "Add a new device", so capture
+ *      happens up-front (real user gesture). On WebRTC connect, the client
+ *      can send a pair.save control message to register itself.
  *
- *   2. `persistent` mode: opens WS to /ws/host-{agent_id} and stays open
- *      across sessions. New clients that already know our host_id + shared
- *      secret can reconnect at any time. Before starting WebRTC, the peer
- *      must send an `auth` signaling message with clientId + secret; the
- *      agent verifies via Tauri and replies auth.ok / auth.fail.
+ *   2. `persistent` mode: opens WS to /ws/host-{agent_id} without capturing
+ *      the screen. Kept open across sessions.
+ *      When a saved client sends `auth`, we verify the secret and fire
+ *      `onIncomingAuth` — the UI shows a system notification + focuses the
+ *      window + shows an "Accept?" prompt. When the user clicks Accept
+ *      (a real user gesture), the UI calls `acceptIncoming()` which triggers
+ *      captureScreen + WebRTC negotiation.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -37,18 +39,20 @@ export type HostPeerEvents = {
   onInput: (evt: InputEvent) => void;
   onClose: (reason?: string) => void;
   onError: (err: Error) => void;
-  onSessionEnded: () => void;   // fired in persistent mode when a client leaves — bus stays open
-  onClientAuthed: () => void;   // fired in persistent mode when auth succeeds
+  /** Persistent mode: a session just ended, bus stays open. */
+  onSessionEnded: () => void;
+  /** Persistent mode: an incoming client authed. Parent should acceptIncoming(). */
+  onIncomingAuth: (clientId: string) => void;
 };
 
 export type HostPeerMode = "pair" | "persistent";
 
 export type HostPeerOptions = {
-  code: string;                 // pairing code (pair mode) or `host-{agent_id}` (persistent)
+  code: string;
   signalingUrl: string;
   mode: HostPeerMode;
-  hostId: string;               // agent_id — sent to client via pair.save.ok
-  hostName: string;             // e.g., "Teyler's MacBook" — display name for the PWA
+  hostId: string;
+  hostName: string;
 };
 
 export function toWsUrl(userUrl: string): string {
@@ -67,7 +71,7 @@ export class HostPeer {
   private inputChannel: RTCDataChannel | null = null;
   private controlChannel: RTCDataChannel | null = null;
   private handlers: Partial<HostPeerEvents> = {};
-  private authed = false;
+  private authedClientId: string | null = null;
   private closed = false;
 
   constructor(opts: HostPeerOptions) {
@@ -78,8 +82,9 @@ export class HostPeer {
     this.handlers[event] = handler;
   }
 
-  /** Prompt user for a screen and start capture. Call before connect(). */
+  /** Prompt user for a screen and start capture. Call before connect() in pair mode. */
   async captureScreen(): Promise<void> {
+    if (this.stream) return; // already captured
     this.stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 60 } },
       audio: true,
@@ -89,7 +94,7 @@ export class HostPeer {
     }
   }
 
-  /** Open the WebSocket to signaling. In persistent mode, stays open across sessions. */
+  /** Open the WebSocket. In persistent mode, stays open across sessions. */
   async connect(): Promise<void> {
     if (this.closed) throw new Error("host closed");
     const url = `${toWsUrl(this.opts.signalingUrl)}/ws/${encodeURIComponent(this.opts.code)}`;
@@ -118,6 +123,32 @@ export class HostPeer {
     });
   }
 
+  /**
+   * Persistent mode only. Called from a user-gesture click handler AFTER
+   * onIncomingAuth fires. Captures the screen, sends auth.ok, and starts
+   * WebRTC negotiation.
+   */
+  async acceptIncoming(): Promise<void> {
+    if (this.opts.mode !== "persistent") {
+      throw new Error("acceptIncoming only valid in persistent mode");
+    }
+    if (!this.authedClientId) {
+      throw new Error("no pending authed client");
+    }
+    await this.captureScreen();          // user gesture required — this is the click
+    this.sendSignal({ t: "auth.ok" });
+    await this.startWebRtc();
+    await this.sendOffer();
+  }
+
+  /** Persistent mode: reject a pending incoming auth (user declined). */
+  rejectIncoming(reason = "denied by host"): void {
+    if (this.authedClientId) {
+      this.sendSignal({ t: "auth.fail", reason });
+      this.authedClientId = null;
+    }
+  }
+
   private async onSignal(msg: SignalMessage): Promise<void> {
     try {
       switch (msg.t) {
@@ -126,15 +157,12 @@ export class HostPeer {
           break;
 
         case "ready":
-          // A new client just joined the room.
           if (this.opts.mode === "pair") {
-            // Pair mode: no auth needed, start WebRTC immediately.
+            // Pair mode: no auth needed, capture already done, start negotiation.
             await this.startWebRtc();
             await this.sendOffer();
-          } else {
-            // Persistent mode: wait for client's `auth` message before doing anything.
-            this.authed = false;
           }
+          // Persistent mode: wait for auth message from the client.
           break;
 
         case "auth":
@@ -147,11 +175,9 @@ export class HostPeer {
             secret: msg.secret,
           });
           if (ok) {
-            this.authed = true;
-            this.sendSignal({ t: "auth.ok" });
-            this.handlers.onClientAuthed?.();
-            await this.startWebRtc();
-            await this.sendOffer();
+            this.authedClientId = msg.clientId;
+            // Do NOT reply auth.ok yet — wait for user gesture. Fire event.
+            this.handlers.onIncomingAuth?.(msg.clientId);
           } else {
             this.sendSignal({ t: "auth.fail", reason: "unknown or invalid credential" });
           }
@@ -165,11 +191,8 @@ export class HostPeer {
 
         case "ice":
           if (!this.pc || !msg.candidate) return;
-          try {
-            await this.pc.addIceCandidate(msg.candidate);
-          } catch (e) {
-            console.warn("addIceCandidate failed", e);
-          }
+          try { await this.pc.addIceCandidate(msg.candidate); }
+          catch (e) { console.warn("addIceCandidate failed", e); }
           break;
 
         case "peer-gone":
@@ -187,7 +210,7 @@ export class HostPeer {
   }
 
   private async startWebRtc(): Promise<void> {
-    this.teardownSession("resetting");   // in case a previous session lingered
+    this.teardownSession("resetting");
 
     this.pc = new RTCPeerConnection({
       iceServers: DEFAULT_ICE_SERVERS,
@@ -197,8 +220,7 @@ export class HostPeer {
     this.inputChannel = this.pc.createDataChannel("input", { ordered: true });
     this.inputChannel.addEventListener("message", (evt) => {
       try {
-        const data = typeof evt.data === "string" ? evt.data : "";
-        const parsed = JSON.parse(data) as InputEvent;
+        const parsed = JSON.parse(typeof evt.data === "string" ? evt.data : "") as InputEvent;
         this.handlers.onInput?.(parsed);
       } catch { /* ignore */ }
     });
@@ -217,20 +239,10 @@ export class HostPeer {
       if (s) this.handlers.onStateChange?.(s);
     });
 
-    // Ensure we have a stream — captureScreen() should have been called before connect()
-    // for pair mode. In persistent mode, we capture lazily on the first authed session.
-    if (!this.stream) {
-      try {
-        await this.captureScreen();
-      } catch (err) {
-        this.handlers.onError?.(
-          err instanceof Error ? err : new Error("screen capture cancelled"),
-        );
-        throw err;
-      }
-    }
-    for (const track of this.stream!.getTracks()) {
-      this.pc.addTrack(track, this.stream!);
+    // Should have captured by now (pair mode: before connect; persistent mode: in acceptIncoming).
+    if (!this.stream) throw new Error("no captured stream — capture before startWebRtc");
+    for (const track of this.stream.getTracks()) {
+      this.pc.addTrack(track, this.stream);
     }
   }
 
@@ -280,6 +292,7 @@ export class HostPeer {
     this.inputChannel = null;
     this.controlChannel = null;
     this.pc = null;
+    this.authedClientId = null;
   }
 
   close(reason?: string): void {
@@ -287,6 +300,7 @@ export class HostPeer {
     this.closed = true;
     try { this.stream?.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
     this.teardownSession(reason ?? "closed");
+    this.stream = null;
     try { this.ws?.close(); } catch { /* ignore */ }
     this.handlers.onClose?.(reason);
   }

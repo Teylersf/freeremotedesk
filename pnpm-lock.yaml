@@ -16,6 +16,9 @@ importers:
       '@tauri-apps/plugin-autostart':
         specifier: ^2.0.0
         version: 2.5.1
+      '@tauri-apps/plugin-notification':
+        specifier: ^2.0.0
+        version: 2.3.3
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2.1.0
@@ -1362,6 +1365,9 @@ packages:
 
   '@tauri-apps/plugin-autostart@2.5.1':
     resolution: {integrity: sha512-zS/xx7yzveCcotkA+8TqkI2lysmG2wvQXv2HGAVExITmnFfHAdj1arGsbbfs3o6EktRHf6l34pJxc3YGG2mg7w==}
+
+  '@tauri-apps/plugin-notification@2.3.3':
+    resolution: {integrity: sha512-Zw+ZH18RJb41G4NrfHgIuofJiymusqN+q8fGUIIV7vyCH+5sSn5coqRv/MWB9qETsUs97vmU045q7OyseCV3Qg==}
 
   '@trickfilm400/rollup-plugin-off-main-thread@3.0.0-pre1':
     resolution: {integrity: sha512-/67zpWDBLV+oYAEL682s1ktXL0HgqX76f6gaVGkGnVZlBbm1zd0v4Bz8MFF2GGhoX9rvfq3KSQHubFHwa6w6/Q==}
@@ -3920,6 +3926,10 @@ snapshots:
       '@tauri-apps/cli-win32-x64-msvc': 2.11.4
 
   '@tauri-apps/plugin-autostart@2.5.1':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
+
+  '@tauri-apps/plugin-notification@2.3.3':
     dependencies:
       '@tauri-apps/api': 2.11.1
 
